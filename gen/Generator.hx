@@ -11,10 +11,17 @@ class Generator {
 			case ["doxygen", url]:
 				throw "Library name required";
 			case ["doxygen", url, libName]:
-				"build.json".saveContent(haxe.Json.stringify(gen.parser.DoxygenParser.parseURL(url, libName)));
+				gen.parser.DoxygenParser.parseURL(url, libName, function(data) "build.json".saveContent(haxe.Json.stringify(data)));
+			case ["filter", path, regex]:
+				if(!path.exists()) throw 'File $path does not exist';
+				else if(!path.endsWith(".json")) throw "Incorrect file format";
+				var data:gen.data.Project = haxe.Json.parse(path.getContent());
+				var regex = new EReg(regex, "");
+				data.types = [for(t in data.types) if(regex.match(t.name) && regex.matchedRight().length <= 0) t];
+				path.saveContent(haxe.Json.stringify(data));
 			case [path]:
 				if(!path.exists()) throw 'File $path does not exist';
-				else if(!path.endsWith(".json")) throw 'Incorrect file format';
+				else if(!path.endsWith(".json")) throw "Incorrect file format";
 				var data:gen.data.Project = haxe.Json.parse(path.getContent());
 				new HaxeGen(data).generate();
 				new CppGen(data).generate();

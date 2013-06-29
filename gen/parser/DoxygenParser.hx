@@ -59,14 +59,17 @@ class DoxygenParser {
 		};
 		h.request(false);
 	}
-	public static function parseURL(url:String, library:String):Project {
+	public static function parseURL(url:String, library:String, cb:Project->Void):Void {
 		var p:Project = {types: [], library: library, cffi: "project/common/ExternalInterface.cpp"};
 		var cont = haxe.Http.requestUrl(url);
 		sys.io.File.saveContent("cont.html", cont);
 		var urls:Array<String> = [for(m in Tools.matches(cont, typex, 1)) if(m[0] != "classes.html") fullURL(m[0], url)];
 		for(u in urls)
-			parseClass(u, function(t) p.types.push(t));
+			parseClass(u, function(t:TypeData) {
+				Sys.println('Parsed ${t.name}');
+				p.types.push(t);
+				cb(p);
+			});
 		while(p.types.length < urls.length) Sys.sleep(0.1);
-		return p;
 	}
 }
