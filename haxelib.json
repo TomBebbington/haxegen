@@ -1,0 +1,11 @@
+{
+	"name": "haxegen",
+	"license": "BSD",
+	"tags": ["cpp", "neko", "native","extern"],
+	"description": "Extern generator, primarily written for generating LLVM externs but there are many more possibilities. Maybe.",
+	"contributors": ["tophattedcoder"],
+	"releasenote": "Initial release",
+	"version": "0.0.1",
+	"url": "https://github.com/tophattedcoder/haxegen",
+	"dependencies": {}
+}
