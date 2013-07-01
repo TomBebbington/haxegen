@@ -1,24 +1,47 @@
 package gen;
 using StringTools;
+import haxe.macro.Type;
+import haxe.macro.Expr;
 abstract HaxeType(String) from String to String {
 	static var linkWrap = ~/<a class="el" href=".*">(.*?)<\/a>/;
-	static var kinds = new Map<String, String>();
+	public static var kinds = new Map<String, String>();
 	static var kid = 0;
 	public var isPointer(get, set):Bool;
 	public var kind(get, never):String;
 	public var defaultNative(get, never):String;
 	public var name(get, never):String;
+	public var parts(get, never):Array<String>;
+	public var haxe(get, never):String;
+	@:to public inline function toComplexType():ComplexType {
+		return TPath({
+			params: [],
+			pack: {
+				var ps = get_parts();
+				ps.slice(0, ps.length-1);
+			},
+			name: new HaxeType(get_haxe()).name
+		});
+	}
+	inline function get_haxe() {
+		var s = this;
+		while(s.endsWith("*") || s.endsWith("&"))
+			s = s.substr(0, s.length-1);
+		return s;
+	}
+	inline function get_parts() return this.split(".");
 	inline function get_name():String {
 		var s = this.split(".");
 		return s[s.length-1];
 	}
 	public inline function new(s:String) this = s;
 	inline function get_kind():String {
-		return if(kinds.exists(this))
-			kinds.get(this);
+		var isP = get_isPointer();
+		var full = isP ? this.substr(0, this.length-1) : this;
+		return if(kinds.exists(full))
+			kinds.get(full);
 		else {
 			var id = "k_"+Tools.id(kid++);
-			kinds.set(this, id);
+			kinds.set(full, id);
 			id;
 		}
 	}
@@ -39,9 +62,6 @@ abstract HaxeType(String) from String to String {
 			default: false;
 		}
 	}
-	public inline function toString() {
-		return this;
-	}
 	public static function fromNativeName(s:String):String {
 		s = s.replace("::", ".");
 		if(s.indexOf("_") != -1)
@@ -56,6 +76,24 @@ abstract HaxeType(String) from String to String {
 	static function toProperCase(s:String, strong:Bool=false):String
 		return s.substring(0, 1).toUpperCase() + (strong ? s.substring(1).toLowerCase() : s.substring(1));
 
+	public function toNative():String {
+		var s:HaxeType = this;
+		var ss:String = s;
+		var isP = s.isPointer;
+		if(isP)
+			s = ss.substr(0, ss.length-1);
+		return (switch(s) {
+			case "Int": "int";
+			case "UInt": "uint";
+			case "haxe.Int64": "int64";
+			case "Single": "float";
+			case "Float": "double";
+			case "Void": "void";
+			case "Bool": "bool";
+			case "String": "std::string";
+			default: "???";
+		}) + (isP ? "*" : "");
+	}
 	public static function ofNative(s:String):HaxeType {
 		s = s.replace("const ", "").replace("virtual ", "").replace("&#160;", "");
 		if(linkWrap.match(s))

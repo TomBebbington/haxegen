@@ -3,13 +3,13 @@ import sys.io.File;
 import sys.FileSystem;
 using StringTools;
 import gen.data.*;
+import haxe.macro.*;
+import haxe.macro.Type;
+import haxe.macro.Expr;
 class HaxeGen {
 	var d:Project;
-	var b:StringBuf;
-	var idc:Int;
 	public function new(d:Project) {
 		this.d = d;
-		idc = 0;
 	}
 	public function generate() {
 		for(t in d.types) {
@@ -30,123 +30,172 @@ class HaxeGen {
 	static function resolvePath(n:String) {
 		return n.replace(".", "/") + ".hx";
 	}
-	inline function genId(x:Int=-1):String {
-		return Tools.id(x == -1 ? idc++ : x); 
-	}
-	public function generateMethod(m:MethodData) {
-		if(m.isStatic == null)
-			m.isStatic = false;
-		if(m.name == "new")
-			m.ret = "Void";
-		else if(m.ret == null)
-			m.ret = "Dynamic";
-		if(m.args == null) m.args = [];
-		b.add('\tpublic inline function ${m.name}(');
-		var argIds = [for(i in 0...m.args.length) Tools.id(i)];
-		b.add([for(i in 0...m.args.length) argIds[i] + ":" + m.args[i]].join(", "));
-		b.add(")");
-		if(m.ret != null) {
-			b.add(":");
-			b.add(m.ret);
-		}
-		b.add(" {\n\t\t");
-		if(m.name == "new")
-			b.add("this = ");
-		else if(m.ret != null && m.ret != "Void")
-			b.add("return ");
-		b.add(CppGen.getName(m));
-		b.add("(");
-		var arguments = argIds.copy();
-		if(!m.isStatic && m.name != "new")
-			arguments.insert(0, "this");
-		b.add(arguments.join(", "));
-		b.add(")");
-		b.add(";\n\t}");
-		b.add("\n");
-	}
-	public function generateField(f:FieldData) {
-		if(f.isStatic == null)
-			f.isStatic = false;
-		if(f.type == null)
-			f.type = "Dynamic";
-		generateMethod({
-			ret: f.type,
-			name: 'get_${f.name}',
-			args: [],
-			isStatic: f.isStatic
+	public function generateMethod(m:MethodData, t:TypeData):Field {
+		if(m.args == null)
+			m.args = [];
+		var argIds:Map<String, String> = new Map();
+		for(i in 0...m.args.length)
+			argIds[cast(m.args[i], String)] = Tools.id(i);
+		var f:Field = generateField(m);
+		f.access.push(Access.AInline);
+		var name = CppGen.getName(m);
+		var args = m.isStatic || m.name == "new" ? m.args : [t.name].concat(m.args);
+		var cexpr:Expr = {
+			expr: ECall({
+				expr: EConst(CIdent(name)),
+				pos: null
+			}, [for(a in args) {
+				{expr: EConst(CIdent(argIds.exists(a) ? argIds.get(a) : "this")), pos: null};
+			}]),
+			pos: null
+		};
+		f.kind = FieldType.FFun({
+			ret: m.ret,
+			params: [],
+			args: [for(a in m.args) {type: a, name: argIds.get(a), opt: false}],
+			expr: if(m.name == "new")
+				macro this = $cexpr
+			else if(m.ret != null && m.ret.name != "Void")
+				macro return $cexpr
+			else
+				cexpr
 		});
-		var s = f.isStatic ? "static " : "";
-		b.add('public ${s}var ${f.name}(get, never):${f.type}');
+		return f;
 	}
-	public function generateFuncType(f:FieldData, t:TypeData) {
-		if(untyped f.ret != null || untyped f.args != null || f.name == "new") {
-			var m:gen.data.MethodData = cast f;
-			if(m.args.length == 0)
-				b.add("Void");
-			else {
-				var args = m.args.copy();
-				if(!m.isStatic)
-					args.insert(0, t.name);
-				b.add([for(a in args)
-					if(a == null) "Void"
-					else if(a.isBuiltin()) a
-					else "Dynamic"
-				].join(" -> "));
+	public function generateNativeMethod(m:MethodData, t:TypeData):Field {
+		if(m.args == null)
+			m.args = [];
+		var argIds:haxe.ds.StringMap<String> = [for(i in 0...m.args.length) cast (m.args[i], String) => Tools.id(i)];
+		var f:Field = generateField(m);
+		f.access.push(Access.AStatic);
+		f.access.remove(Access.APublic);
+		f.access.push(Access.APrivate);
+		f.name = CppGen.getName(m);
+		var librarye:Expr = {
+			expr: EConst(CString(d.library)),
+			pos: null
+		}, name:Expr = {
+			expr: EConst(CString(CppGen.getName(m))),
+			pos: null
+		}, arglen:Expr = {
+			expr: EConst(CInt(Std.string(m.args.length + (m.isStatic || m.name == "new" ? 0 : 1)))),
+			pos: null
+		};
+		f.kind = FieldType.FVar(generateFuncType(m, t), macro cpp.Lib.load($librarye, $name, $arglen));
+		return f;
+	}
+	public function generateField(f:FieldData):Field {
+		return {
+			pos: null,
+			name: f.rename == null ? f.name : f.rename,
+			kind: f.type == null ? null : FieldType.FProp("get", "never", f.type),
+			access: {
+				var a = [];
+				if(f.isStatic)
+					a.push(AStatic);
+				a.push(APublic);
+				a;
 			}
-			b.add(' -> ${m.name == "new" ? t.name : m.ret}');
-		} else {
-			var type = if(f.type == null) "Void"
-			else if(f.type.isBuiltin()) f.type
-			else "Dynamic";
-			b.add('Void -> ${f.type == null ? "Void" : f.type}');
-		}
+		};
 	}
-	public function generateExtern(f:FieldData, t:TypeData) {
-		var ps = untyped (f.args == null ? 0 : f.args);
-		var name = CppGen.getName(f);
-		b.add('\tstatic var $name:');
-		generateFuncType(f, t);
-		b.add(' = load("${d.library}", "$name", ps);');
-		b.add("\n");
+	public function generateProperty(p:PropData):Field {
+		return {
+			pos: null,
+			name: p.name,
+			kind: FieldType.FProp("get", "set", p.type),
+			access: {
+				var a = [];
+				if(p.isStatic)
+					a.push(AStatic);
+				a.push(APublic);
+				a;
+			}
+		};
+	}
+	public function generateFuncType(f:FieldData, t:TypeData):ComplexType {
+		var method:MethodData = (untyped f.ret != null || untyped f.args != null || f.name == "new") ? cast f : null;
+		if(method.args == null)
+			method.args = [];
+		var args:Array<HaxeType> = [], ret:HaxeType = null;
+		if(method != null) {
+			ret = method.ret;
+			args = if(method.isStatic)
+				method.args
+			else {
+				var cargs = method.args.copy();
+				cargs.insert(0, t.name);
+				cargs;
+			}
+		} else {
+			ret = f.type;
+			if(!f.isStatic)
+				args.push(t.name);
+		}
+		return ComplexType.TFunction([for(a in args) (a.isBuiltin() ? a : macro:Dynamic)], ret);
 	}
 	public function generateType(t:TypeData):String {
-		var parts = t.name.split(".");
-		var name = parts[parts.length-1];
-		b = new StringBuf();
-		if(parts.length > 0)
-			b.add("package "+parts.slice(0, parts.length-1).join(".")+";\n");
-		if(t.type == null)
-			t.type = t.values != null ? "enum" : "class";
-		if(t.type == "class")
-			b.add("#if cpp\n\timport cpp.Lib.load;\n#else\n\timport neko.Lib.load;\n#end\n");
-		switch(t.type) {
-			case "enum":
-				b.add('enum $name {\n');
-				for(v in t.values)
-					b.add('\t$v;\n');
-				b.add("}");
-			case "class":
-				b.add('abstract $name(Dynamic) {\n');
-				if(t.extend != null) {
-					b.add('\t@:from static inline function from${t.extend.name}(o:${t.extend}):${t.name} return cast o;\n');
-					b.add('\t@:to inline function to${t.extend.name}():${t.extend} return cast this;\n');
-				}
-				var all:Array<FieldData> = [];
-				if(t.fields != null) {
-					all = all.concat(t.fields);
-					for(f in t.fields)
-						generateField(f);
-				}
-				if(t.methods != null) {
-					all = all.concat(cast t.methods);
-					for(m in t.methods)
-						generateMethod(m);
-				}
-				for(a in all)
-					generateExtern(a, t);
-				b.add("}");
-		}
-		b.add("\n");
-		return b.toString();
+		var parts = t.name.parts;
+		var name = t.name.name;
+		var type:TypeDefinition = {
+			pos: null,
+			pack: parts.slice(0, parts.length-1),
+			params: [],
+			name: t.name.name,
+			meta: [],
+			isExtern: false,
+			kind: switch(t.type) {
+				case "enum": TypeDefKind.TDEnum;
+				default: TypeDefKind.TDAbstract(macro:Dynamic, [], []);
+			},
+			fields: switch(t.type) {
+				case "enum": [for(v in t.values) {
+					pos: null,
+					name: v,
+					kind: FieldType.FVar(null, null)
+				}];
+				default: 
+					var fields:Array<Field> = [];
+					if(t.extend != null) {
+						fields.push({
+							pos: null,
+							name: 'to${t.extend.name}',
+							kind: FieldType.FFun({
+								ret: t.extend,
+								params: [],
+								expr: macro return cast this,
+								args: []
+							}),
+							access: [APublic, AInline],
+							meta: [{
+								pos: null,
+								params: [],
+								name: ":to"
+							}]
+						});
+						fields.push({
+							pos: null,
+							name: 'from${t.extend.name}',
+							kind: FieldType.FFun({
+								ret: t.extend,
+								params: [],
+								expr: macro return cast o,
+								args: [{type: t.extend, opt: false, name:"o"}]
+							}),
+							access: [APublic, AStatic, AInline],
+							meta: [{
+								pos: null,
+								params: [],
+								name: ":from"
+							}]
+						});
+					}
+					fields = fields.concat([for(p in t.properties) generateProperty(p)]);
+					fields = fields.concat([for(f in t.fields) generateField(f)]);
+					fields = fields.concat([for(m in t.methods) generateMethod(m, t)]);
+					fields = fields.concat([for(m in t.methods) generateNativeMethod(m, t)]);
+					fields;
+			}
+		};
+		return new Printer().printTypeDefinition(type);
 	}
 }

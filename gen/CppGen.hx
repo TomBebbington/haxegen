@@ -41,30 +41,26 @@ class CppGen {
 				default: generateMethod(m, t);
 			}
 	}
-	public function toNative(s:HaxeType) {
+	public function lookupNative(s:HaxeType) {
 		var isP = s.isPointer;
 		if(isP)
-			 s = s.toString().substr(0, s.toString().length-1);
-		return (switch(s) {
-			case "Int": "int";
-			case "UInt": "uint";
-			case "haxe.Int64": "int64";
-			case "Single": "float";
-			case "Float": "double";
-			case "Dynamic": "void*";
-			case "Void": "void";
-			case "Bool": "bool";
-			case "String": "string";
-			default:
-				var ntv = null;
-				for(t in d.types) {
-					if(t.name == s || t.native == s.defaultNative) {
-						ntv = t.native;
-						break;
-					}
-				}
-				ntv == null ? s.defaultNative : ntv;
-		}) + (isP ? "*" : "");
+			s.isPointer = false;
+		var ntv = null;
+		for(t in d.types) {
+			if(t.name == s || t.native == s.defaultNative) {
+				ntv = t.native;
+				break;
+			}
+		}
+		if(ntv == null)
+			throw 'Could not find type $s';
+		if(isP)
+			s.isPointer = true;
+		return ntv == null ? s.defaultNative : (ntv + (isP ? "*" : ""));
+	}
+	inline function toNative(s:HaxeType) {
+		var n = s.toNative();
+		return n == null || n.indexOf("???") != -1 ? lookupNative(s) : n;
 	}
 	public function generateConversionFrom(name:String, typ:HaxeType) {
 		return switch(typ) {
@@ -72,17 +68,17 @@ class CppGen {
 			case "String": 'val_string($name)';
 			case "Float", "Single": 'val_float($name)';
 			case "Bool": 'val_bool($name)';
-			default: '((${toNative(typ)}*) val_kind(${typ.kind},$name))';
+			default: '((${toNative(typ)+(typ.isPointer?"":"*")}) val_kind($name))';
 		};
 	}
 	public function generateConversionTo(name:String, typ:HaxeType) {
 		return switch(typ) {
 			case "Int", "Uint", "Int64", "haxe.Int64": 'alloc_int($name)';
-			case "String": 'alloc_string($name)';
+			case "String": 'alloc_string($name -> c_str())';
 			case "Float", "Single": 'alloc_float($name)';
 			case "Bool": 'alloc_bool($name)';
 			case "Dynamic": 'alloc_object($name)';
-			default: 'alloc_abstract(${typ.kind},$name)';
+			case _: 'alloc_abstract(${typ.kind},${typ.isPointer?"":"&"}$name)';
 		};
 	}
 	public function generateConstructor(m:MethodData, t:TypeData) {
@@ -93,6 +89,8 @@ class CppGen {
 		b.add('value $id(');
 		b.add([for(a in argIds) 'value $a'].join(", "));
 		var native = '${t.native}*';
+		if(m.isConst)
+			native = 'const $native';
 		b.add(") {");
 		b.add('// constructor');
 		b.add('\n\t$native v = ');
@@ -119,30 +117,32 @@ class CppGen {
 		b.add(') { // ${m.name} \n\t');
 		if(!isVoid) {
 			var native = toNative(m.ret);
+			if(m.isConst)
+				native = 'const $native';
 			b.add('$native v = ');
 		}
-		if(m.isStatic) {
-			var ht:HaxeType = t.name;
-			b.add(t.native == null ? ht.defaultNative : t.native);
-			b.add("::");
-		} else {
-			b.add(generateConversionFrom(argIds[0], t.name));
-			b.add(" -> ");
-		}
-		if(m.ret.isPointer)
-			b.add("&");
-		b.add(m.name);
-		b.add("(");
-		var arguments = [for(a in 0...m.args.length) {
-			generateConversionFrom(argIds[a + argOff], m.args[a]);
-		}];
-		if(!m.isStatic)
-			arguments = arguments.slice(1);
-		b.add(arguments.join(", "));
-		b.add(");\n");
+		var callStr = "";
+		if(m.isStatic)
+			callStr += (t.native == null ? t.name.defaultNative : t.native) + "::";
+		else
+			callStr += generateConversionFrom(argIds[0], t.name) + " -> ";
+		var args = [for(i in 0...m.args.length) generateConversionFrom(argIds[i + argOff], m.args[i])].join(", ");
+		callStr += '${m.name}($args)';
+		if(m.code == null)
+			b.add(callStr);
+		else
+			b.add(StringTools.replace(m.code, "$", callStr));
+		b.add(";\n");
 		if(!isVoid) {
+			if(!m.ret.isPointer) {
+				b.add("\t");
+				var ntv = toNative(m.ret) + "*";
+				if(m.isConst)
+					ntv = 'const $ntv';
+				b.add('$ntv bv = &v;\n');
+			}
 			b.add("\treturn ");
-			b.add(generateConversionTo("v", m.ret));
+			b.add(generateConversionTo(m.ret.isPointer ? "v" : "bv", m.ret));
 			b.add(";\n");
 		}
 		b.add("}\n");
