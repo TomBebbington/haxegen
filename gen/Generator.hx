@@ -65,6 +65,10 @@ class Generator {
 					isConst: prop.isConst
 				});
 			}
+			for(m in t.methods) {
+				if(m.ret == null)
+					m.ret = "Dynamic";
+			}
 		}
 		return p;
 	}

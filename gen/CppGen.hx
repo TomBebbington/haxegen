@@ -45,22 +45,24 @@ class CppGen {
 		var isP = s.isPointer;
 		if(isP)
 			s.isPointer = false;
-		var ntv = null;
+		var typ:TypeData = null;
 		for(t in d.types) {
 			if(t.name == s || t.native == s.defaultNative) {
-				ntv = t.native;
+				typ = t;
 				break;
 			}
 		}
-		if(ntv == null)
+		if(typ == null)
 			throw 'Could not find type $s';
+		var ntv = typ.native;
 		if(isP)
 			s.isPointer = true;
 		return ntv == null ? s.defaultNative : (ntv + (isP ? "*" : ""));
 	}
 	inline function toNative(s:HaxeType) {
 		var n = s.toNative();
-		return n == null || n.indexOf("???") != -1 ? lookupNative(s) : n;
+		var ss = n == null || n.indexOf("???") != -1 ? lookupNative(s) : n;
+		return ss;
 	}
 	public function generateConversionFrom(name:String, typ:HaxeType) {
 		return switch(typ) {
@@ -68,17 +70,30 @@ class CppGen {
 			case "String": 'val_string($name)';
 			case "Float", "Single": 'val_float($name)';
 			case "Bool": 'val_bool($name)';
-			default: '((${toNative(typ)+(typ.isPointer?"":"*")}) val_kind($name))';
+			case _ if(typ.isPointer && typ.isBuiltin()):
+				trace(typ);
+				var ts = Std.string(typ);
+				var conv = generateConversionFrom(name, ts.substr(0, ts.length-1));
+				'&$conv';
+			case _ if(!typ.isPointer): '(*((${toNative(typ)}*) val_data($name)))';
+			case _ if(typ.isPointer): '((${toNative(typ)}) val_data($name))';
 		};
 	}
 	public function generateConversionTo(name:String, typ:HaxeType) {
 		return switch(typ) {
+			case _ if(typ.isPointer && typ.isBuiltin()):
+				var t:String = typ;
+				var ty:HaxeType = t;
+				ty.isPointer = false;
+				generateConversionTo('*$name', ty);
 			case "Int", "Uint", "Int64", "haxe.Int64": 'alloc_int($name)';
-			case "String": 'alloc_string($name -> c_str())';
+			case "String*": 'alloc_string($name -> c_str())';
+			case "String": 'alloc_string($name.c_str())';
 			case "Float", "Single": 'alloc_float($name)';
 			case "Bool": 'alloc_bool($name)';
 			case "Dynamic": 'alloc_object($name)';
-			case _: 'alloc_abstract(${typ.kind},${typ.isPointer?"":"&"}$name)';
+			case _ if(!typ.isPointer): 'alloc_abstract(${typ.kind},&$name)';
+			case _: 'alloc_abstract(${typ.kind},$name)';
 		};
 	}
 	public function generateConstructor(m:MethodData, t:TypeData) {
@@ -101,7 +116,7 @@ class CppGen {
 		var arguments = argIds.copy();
 		b.add(arguments.join(", "));
 		b.add(");\n\treturn ");
-		b.add(generateConversionTo("v", t.name));
+		b.add('alloc_abstract(${t.name.kind}, v)');
 		b.add(';\n}\nDEFINE_PRIM($id,${argIds.length});\n');
 	}
 	public function generateMethod(m:MethodData, t:TypeData) {
@@ -114,38 +129,44 @@ class CppGen {
 		b.add(m.ret == "Void" ? "void" : "value");
 		b.add(' $id(');
 		b.add([for(a in argIds) 'value $a'].join(", "));
-		b.add(') { // ${m.name} \n\t');
-		if(!isVoid) {
-			var native = toNative(m.ret);
-			if(m.isConst)
-				native = 'const $native';
-			b.add('$native v = ');
-		}
-		var callStr = "";
-		if(m.isStatic)
-			callStr += (t.native == null ? t.name.defaultNative : t.native) + "::";
-		else
-			callStr += generateConversionFrom(argIds[0], t.name) + " -> ";
-		var args = [for(i in 0...m.args.length) generateConversionFrom(argIds[i + argOff], m.args[i])].join(", ");
-		callStr += '${m.name}($args)';
-		if(m.code == null)
-			b.add(callStr);
-		else
-			b.add(StringTools.replace(m.code, "$", callStr));
-		b.add(";\n");
-		if(!isVoid) {
-			if(!m.ret.isPointer) {
-				b.add("\t");
-				var ntv = toNative(m.ret) + "*";
+		b.add(") ");
+		if(m.code != null && m.code.charAt(0) == "{") {
+			var code = m.code;
+			var ntabs = ~/\t(\t*)/;
+			ntabs.match(code);
+			var tabs = ntabs.matched(1);
+			code = StringTools.replace(code, '\n$tabs', "\n\t");
+			b.add(code);
+			b.add("\n");
+		} else {
+			b.add('{ // ${m.name} \n\t');
+			if(!isVoid) {
+				var native = toNative(m.ret);
 				if(m.isConst)
-					ntv = 'const $ntv';
-				b.add('$ntv bv = &v;\n');
+					native = 'const $native';
+				b.add('$native v = ');
 			}
-			b.add("\treturn ");
-			b.add(generateConversionTo(m.ret.isPointer ? "v" : "bv", m.ret));
+			var callStr = "";
+			if(m.native != null && m.native.indexOf("::") != -1)
+				callStr += m.native;
+			else if(m.isStatic)
+				callStr += (t.native == null ? t.name.defaultNative : t.native) + '::${m.name}';
+			else
+				callStr += generateConversionFrom(argIds[0], t.name) + '.${m.name}';
+			var args = [for(i in 0...m.args.length) generateConversionFrom(argIds[i + argOff], m.args[i])].join(", ");
+			callStr += '($args)';
+			if(m.code == null)
+				b.add(callStr);
+			else
+				b.add(StringTools.replace(m.code, "$", callStr));
 			b.add(";\n");
+			if(!isVoid) {
+				b.add("\treturn ");
+				b.add(generateConversionTo("v", m.ret));
+				b.add(";\n");
+			}
+			b.add("}\n");
 		}
-		b.add("}\n");
 		b.add('DEFINE_PRIM($id,${argIds.length});\n');
 	}
 	public function generateHeaders() {

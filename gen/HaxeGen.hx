@@ -49,16 +49,24 @@ class HaxeGen {
 			}]),
 			pos: null
 		};
+		var isSet = f.name.startsWith("set_");
 		f.kind = FieldType.FFun({
-			ret: m.ret,
+			ret: isSet ? m.args[m.args.length-1] : m.ret,
 			params: [],
 			args: [for(a in m.args) {type: a, name: argIds.get(a), opt: false}],
 			expr: if(m.name == "new")
-				macro this = $cexpr
+				macro { this = $cexpr; }
 			else if(m.ret != null && m.ret.name != "Void")
-				macro return $cexpr
-			else
-				cexpr
+				macro { return $cexpr; }
+			else if(isSet) {
+				var name = argIds.get(m.args[m.args.length-1]);
+				var namee:Expr = {expr: EConst(CIdent(name)), pos: null};
+				macro {
+					$cexpr;
+					return $namee;
+				}
+			} else
+				macro { $cexpr; }
 		});
 		return f;
 	}
@@ -67,9 +75,7 @@ class HaxeGen {
 			m.args = [];
 		var argIds:haxe.ds.StringMap<String> = [for(i in 0...m.args.length) cast (m.args[i], String) => Tools.id(i)];
 		var f:Field = generateField(m);
-		f.access.push(Access.AStatic);
-		f.access.remove(Access.APublic);
-		f.access.push(Access.APrivate);
+		f.access = [Access.AStatic, Access.APrivate];
 		f.name = CppGen.getName(m);
 		var librarye:Expr = {
 			expr: EConst(CString(d.library)),
@@ -81,7 +87,7 @@ class HaxeGen {
 			expr: EConst(CInt(Std.string(m.args.length + (m.isStatic || m.name == "new" ? 0 : 1)))),
 			pos: null
 		};
-		f.kind = FieldType.FVar(generateFuncType(m, t), macro cpp.Lib.load($librarye, $name, $arglen));
+		f.kind = FieldType.FVar(generateFuncType(m, t), macro neko.Lib.load($librarye, $name, $arglen));
 		return f;
 	}
 	public function generateField(f:FieldData):Field {
@@ -91,7 +97,7 @@ class HaxeGen {
 			kind: f.type == null ? null : FieldType.FProp("get", "never", f.type),
 			access: {
 				var a = [];
-				if(f.isStatic)
+				if(f.isStatic && f.name != "new")
 					a.push(AStatic);
 				a.push(APublic);
 				a;
@@ -119,7 +125,7 @@ class HaxeGen {
 		var args:Array<HaxeType> = [], ret:HaxeType = null;
 		if(method != null) {
 			ret = method.ret;
-			args = if(method.isStatic)
+			args = if(method.isStatic || method.name == "new")
 				method.args
 			else {
 				var cargs = method.args.copy();
@@ -131,7 +137,12 @@ class HaxeGen {
 			if(!f.isStatic)
 				args.push(t.name);
 		}
-		return ComplexType.TFunction([for(a in args) (a.isBuiltin() ? a : macro:Dynamic)], ret);
+		var fargs = [for(a in args) if(a != null) (a.isBuiltin() ? a.toComplexType() : macro:Dynamic)];
+		if(fargs.length == 0)
+			fargs.push(macro:Void);
+		if(!ret.isBuiltin())
+			ret = "Dynamic";
+		return ComplexType.TFunction(fargs, ret);
 	}
 	public function generateType(t:TypeData):String {
 		var parts = t.name.parts;
@@ -162,7 +173,7 @@ class HaxeGen {
 							kind: FieldType.FFun({
 								ret: t.extend,
 								params: [],
-								expr: macro return cast this,
+								expr: macro { return cast this; },
 								args: []
 							}),
 							access: [APublic, AInline],
@@ -178,7 +189,7 @@ class HaxeGen {
 							kind: FieldType.FFun({
 								ret: t.extend,
 								params: [],
-								expr: macro return cast o,
+								expr: macro { return cast o; },
 								args: [{type: t.extend, opt: false, name:"o"}]
 							}),
 							access: [APublic, AStatic, AInline],

@@ -10,4 +10,5 @@ typedef TypeData = {
 	@:optional var methods:Array<MethodData>;
 	@:optional var values:Array<String>;
 	@:optional var properties:Array<PropData>;
+	@:optional var noPoint:Bool;
 }

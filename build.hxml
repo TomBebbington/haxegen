@@ -1,5 +1,3 @@
 -main gen.Generator
 -neko run.n
---next 
--main gen.Generator
--ocaml ml
+-dce full
