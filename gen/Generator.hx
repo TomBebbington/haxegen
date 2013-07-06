@@ -45,6 +45,15 @@ class Generator {
 				t.fields = [];
 			if(t.methods == null)
 				t.methods = [];
+			for(f in t.fields)
+				t.methods.push({
+					name: f.name,
+					ret: f.type,
+					rename: 'get_${f.name}',
+					isStatic: f.isStatic,
+					isConst: f.isConst,
+					nativeRet: f.native
+				});
 			for(prop in t.properties) {
 				var upped = prop.name.charAt(0).toUpperCase() + prop.name.substr(1);
 				if(prop.getter == null) prop.getter = 'get$upped';

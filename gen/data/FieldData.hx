@@ -6,4 +6,6 @@ typedef FieldData = {
 	@:optional var type:HaxeType;
 	@:optional var isStatic:Bool;
 	@:optional var isConst:Bool;
+	@:optional var pre:String;
+	@:optional var native:String;
 }

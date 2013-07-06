@@ -62,6 +62,9 @@ abstract HaxeType(String) from String to String {
 			default: false;
 		}
 	}
+	public inline function isArray():Bool {
+		return this.startsWith("Array<") && this.endsWith(">");
+	}
 	public static function fromNativeName(s:String):String {
 		s = s.replace("::", ".");
 		if(s.indexOf("_") != -1)
@@ -75,7 +78,9 @@ abstract HaxeType(String) from String to String {
 	}
 	static function toProperCase(s:String, strong:Bool=false):String
 		return s.substring(0, 1).toUpperCase() + (strong ? s.substring(1).toLowerCase() : s.substring(1));
-
+	public function arrayType():HaxeType {
+		return this.substring(6, this.length-1);
+	}
 	public function toNative():String {
 		var s:HaxeType = this;
 		var ss:String = s;
@@ -105,6 +110,7 @@ abstract HaxeType(String) from String to String {
 			s = s.substr(0, s.length-1);
 		var s = switch(s) {
 			case "bool": "Bool";
+			case _ if(s.endsWith("[]")): 'Array<${ofNative(s.substring(0, s.length-2))}>';
 			case _ if(s.startsWith("[") && s.endsWith("]")): 'Array<${ofNative(s.substring(1, s.length-1))}>';
 			case "unsigned", "char", "int", "uint", "int8", "uint8", "int16", "uint16", "int32", "uint32": "Int";
 			case _ if(s.indexOf("int64") != -1): "Int64";

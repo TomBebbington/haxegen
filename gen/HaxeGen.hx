@@ -49,6 +49,8 @@ class HaxeGen {
 			}]),
 			pos: null
 		};
+		if(m.ret.isArray())
+			cexpr = macro neko.Lib.nekoToHaxe($cexpr);
 		var isSet = f.name.startsWith("set_");
 		f.kind = FieldType.FFun({
 			ret: isSet ? m.args[m.args.length-1] : m.ret,
@@ -187,7 +189,7 @@ class HaxeGen {
 							pos: null,
 							name: 'from${t.extend.name}',
 							kind: FieldType.FFun({
-								ret: t.extend,
+								ret: t.name,
 								params: [],
 								expr: macro { return cast o; },
 								args: [{type: t.extend, opt: false, name:"o"}]
@@ -204,6 +206,29 @@ class HaxeGen {
 					fields = fields.concat([for(f in t.fields) generateField(f)]);
 					fields = fields.concat([for(m in t.methods) generateMethod(m, t)]);
 					fields = fields.concat([for(m in t.methods) generateNativeMethod(m, t)]);
+					var tname:Expr = {expr: EConst(CString(t.name)), pos: null};
+					var sexpr:Expr = macro $tname + " {\n";
+					for(p in t.fields.concat(cast t.properties))
+						if(!p.isStatic) {
+							var name = p.name;
+							var field:Expr = {expr: EConst(CIdent("get_"+name)), pos: null};
+							var ename:Expr = {expr: EConst(CString(name)), pos: null};
+							sexpr = macro $sexpr + "\t" + $ename + " =  " + $field() + ";\n";
+						}
+					sexpr = macro $sexpr + "}";
+					fields.push({
+						pos: null,
+						name: "toString",
+						kind: FieldType.FFun({
+							ret: macro: String,
+							params: [],
+							args: [],
+							expr: macro { return $sexpr;}
+						}),
+						access: [APublic, AInline],
+						meta: [
+						]
+					});
 					fields;
 			}
 		};

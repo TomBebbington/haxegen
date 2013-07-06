@@ -27,14 +27,6 @@ class CppGen {
 		var methods = [];
 		if(t.methods != null)
 			methods = methods.concat(t.methods);
-		if(t.fields != null)
-			for(f in t.fields)
-				methods.push({
-					ret: f.type,
-					name: 'get_${f.name}',
-					args: [],
-					isStatic: f.isStatic
-				});
 		for(m in methods)
 			switch(m.name) {
 				case "new": generateConstructor(m, t);
@@ -126,6 +118,8 @@ class CppGen {
 		var isVoid = m.ret == "Void";
 		var argOff = m.isStatic ? 0 : 1;
 		var argIds = [for(i in 0...argOff + m.args.length) Tools.id(i)];
+		if(m.isConst)
+			b.add("const ");
 		b.add(m.ret == "Void" ? "void" : "value");
 		b.add(' $id(');
 		b.add([for(a in argIds) 'value $a'].join(", "));
@@ -135,9 +129,30 @@ class CppGen {
 			var ntabs = ~/\t(\t*)/;
 			ntabs.match(code);
 			var tabs = ntabs.matched(1);
-			code = StringTools.replace(code, '\n$tabs', "\n\t");
+			code = StringTools.replace(code, '\n$tabs', "\n");
 			b.add(code);
 			b.add("\n");
+		} else if(m.ret.isArray()) {
+			b.add("{\n\t");
+			if(!isVoid) {
+				var native = toNative(t.name) + "*";
+				if(m.isConst)
+					native = 'const $native';
+				b.add('$native v = ');
+				b.add(generateConversionFrom(argIds[0], native));
+				b.add(";\n\t");
+			}
+			/*var pre = m.pre == null ? "" : m.pre;
+			b.add('value array = alloc_array(v -> ${pre}size());\n\t');
+			b.add(toNative(m.ret.arrayType()));
+			b.add("* arr = val_array_ptr(array);\n\t");
+			b.add('uint i = 0;\n\t');
+			b.add('for(${m.nativeRet} it = v -> ${pre}begin();it != v -> ${pre}end();it++) {\n\t\t');
+			b.add("i++;\n\t\t");
+			b.add("arr[i] = &*it;\n\t");
+			b.add('}\n\t');
+			b.add("return array;\n");*/
+			b.add("}\n");
 		} else {
 			b.add('{ // ${m.name} \n\t');
 			if(!isVoid) {
