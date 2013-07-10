@@ -170,10 +170,26 @@ class CppGen {
 				callStr += generateConversionFrom(argIds[0], t.name) + '.${m.name}';
 			var args = [for(i in 0...m.args.length) generateConversionFrom(argIds[i + argOff], m.args[i])].join(", ");
 			callStr += '($args)';
-			if(m.code == null)
+			if(m.code == null) {
 				b.add(callStr);
-			else
-				b.add(StringTools.replace(m.code, "$", callStr));
+			} else {
+				var variable = ~/\$([0-9]*)/;
+				var pos = 0;
+				while (variable.matchSub(m.code, pos)) {
+					var matched = variable.matched(1);
+					var p = variable.matchedPos();
+					pos = p.pos + p.len;
+					if (matched == "") {
+						m.code = m.code.substr(0, p.pos) + callStr + m.code.substr(p.pos + p.len);
+					} else {
+						var i = Std.parseInt(matched);
+						if (i >= 0 && i <= m.args.length) {
+							m.code = StringTools.replace(m.code, "$" + matched, generateConversionFrom(argIds[i + argOff], m.args[i]));
+						}
+					}
+				}
+				b.add(m.code);
+			}
 			b.add(";\n");
 			if(!isVoid) {
 				b.add("\treturn ");
