@@ -61,7 +61,7 @@ class CppGen {
 			case TPath({name: "Int" | "UInt"}): 'val_int($name)';
 			case TPath({name: "Float"}): 'val_float($name)';
 			case TPath({name: "String"}): 'val_string($name)';
-			case _ if(types.exists(typ.toString())): '(${toNative(typ)}) val_data($name)';
+			case _ if(types.exists(typ.toString())): '(${toNative(typ)}*) val_data($name)';
 			default: throw 'Cannot convert type $typ';
 		};
 	}
@@ -103,7 +103,7 @@ class CppGen {
 				'${e.native}::${f.name}';
 			else {
 				var conv = generateConversionFrom("self", e.type.toComplexType());
-				'$conv -> ${f.name}';
+				'($conv) -> ${f.name}';
 			}
 			callStr += "(";
 			callStr += [for(i in 0...func.args.length) generateConversionFrom(cargs[argoff + i], func.args[i].type)].join(", ");
