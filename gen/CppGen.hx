@@ -1,209 +1,164 @@
 package gen;
 import gen.data.*;
+import haxe.macro.*;
+import haxe.macro.Expr;
+import haxe.macro.Type;
+import haxe.ds.WeakMap;
+using haxe.macro.ComplexTypeTools;
+using haxe.macro.TypeTools;
 using sys.io.File;
+using Lambda;
 class CppGen {
-	var d:Project;
-	public static var names = new Map<FieldData, String>();
-	static var fc = 0;
+	public static inline var PATH = "project/common/ExternalInterface.cpp";
+	var d:Array<External>;
+	public var types:Map<String, Type>;
+	public var kinds:Map<Type, String>;
+	public var projectName = null;
+	public var fid:Int;
 	var b:StringBuf;
-	public function new(d:Project) {
+	public function new(d:Array<External>) {
+		fid = 0;
+		projectName = d[0].native.split("::")[0];
+		kinds = new Map<Type, String>();
+		types = new Map<String, Type>();
+		trace(projectName);
 		this.d = d;
+		this.b = null;
 	}
-	public function generate() {
+	public function toNative(t:ComplexType) {
+		return if(types.exists(t.toString())) switch(types.get(t.toString())) {
+			case TInst(ct, ps) if(ct.get().meta.has(":native")): Tools.resolveString(ct.get().meta.get().filter(function(e) return e.name == ":native")[0].params[0]);
+			case all: throw 'Unsupported type ${all}';
+		} else switch(t) {
+			case TPath({name: "Int"}): "int";
+			case TPath({name: "UInt"}): "uint";
+			case TPath({name: "Float"}): "float";
+			case TPath({name: "Bool"}): "bool";
+			case TPath({name: "Void"}): "void";
+			case TPath({name: "String"}): "std::string";
+			case TPath({name: "Pointer", pack: ["gen"], params: [TPType(t)]}): toNative(t) + "*";
+			default: throw 'Unsupported type ${t.toString()}: $t';
+		}
+	}
+	public function generateConversionTo(name:String, typ:ComplexType) {
+		return switch(typ) {
+			case TPath({name: "Int" | "UInt"}): 'alloc_int($name)';
+			case TPath({name: "Bool"}): 'alloc_bool($name)';
+			case TPath({name: "Float"}): 'alloc_float($name)';
+			case TPath({name: "String"}): 'alloc_string($name)';
+			case TPath({name: "Void"}): throw 'Cannot wrap $name - is void';
+			case _ if(types.exists(typ.toString())):
+				var kind = kinds.get(types.get(typ.toString()));
+				'alloc_abstract($kind, *$name)';
+			case TPath({name: "Pointer", pack: ["gen"], params: [TPType(t)]}) if(types.exists(t.toString())):
+				var kind = kinds.get(types.get(t.toString()));
+				'alloc_abstract($kind, $name)';
+			default: throw 'Unsupported type ${typ.toString()} - $typ';
+		}
+	}
+	public function generateConversionFrom(name:String, typ:ComplexType) {
+		return switch(typ) {
+			case TPath({name: "Int" | "UInt"}): 'val_int($name)';
+			case TPath({name: "Float"}): 'val_float($name)';
+			case TPath({name: "String"}): 'val_string($name)';
+			case _ if(types.exists(typ.toString())): 'val_data($name)';
+			default: throw 'Cannot convert type $typ';
+		};
+	}
+	function generateMethod(e:External, f:Field, func:Function) {
+		if(f.access.has(AInline))
+			return;
+		var isVoid = f.name != "new" && func.ret.toString() == "Void", isConst = f.name == "new", isStatic = f.access.has(AStatic);
+		b.add(isVoid ? "void " : "value ");
+		var name = Tools.methodName(e.type.toComplexType(), f);
+		var cargs = [for(a in func.args) a.name];
+		var argoff = isStatic || isConst ? 0 : 1;
+		if(argoff == 1)
+			cargs.insert(0, "self");
+		b.add('$name(');
+		b.add([for(c in cargs) 'value $c'].join(", "));
+		b.add(") ");
+		var code = f.meta.filter(function(e) return e.name == ":code")[0];
+		if(code != null) {
+			var acode = Tools.resolveString(code.params[0]);
+			var ntabs = ~/\t(\t*)/;
+			ntabs.match(acode);
+			var tabs = ntabs.matched(1);
+			acode = StringTools.replace(acode, '\n$tabs', "\n");
+			var wrap = ~/\$\((.*?)\)/;
+			while(wrap.match(acode)) {
+				var id = wrap.matched(1);
+				var conv = generateConversionTo(id, func.ret);
+				acode = wrap.matchedLeft() + conv + wrap.matchedRight();
+			}
+			b.add(acode);
+			b.add("\n");
+		} else  {
+			b.add("{\n\t");
+			var callStr = "";
+			var fname = f.name;
+			callStr += if(isConst)
+				'new ${e.native}'
+			else if(isStatic)
+				'${e.native}::${f.name}';
+			else {
+				var conv = generateConversionFrom("self", e.type.toComplexType());
+				'$conv -> ${f.name}';
+			}
+			callStr += "(";
+			callStr += [for(i in 0...func.args.length) generateConversionFrom(cargs[argoff + i], func.args[i].type)].join(", ");
+			callStr += ")";
+			if(isVoid)
+				b.add('${callStr};');
+			else {
+				b.add(toNative(func.ret));
+				b.add(" v = ");
+				b.add(callStr);
+				b.add(";\n\t");
+				b.add('return ${generateConversionTo("v", isConst ? e.type.toComplexType() : func.ret)}');
+			}
+			b.add("\n}\n");
+		}
+		b.add('DEFINE_PRIM($name, ${cargs.length});\n');
+	}
+	function generateField(e:External, f:Field) {
+		switch(f.kind) {
+			case FFun(func): generateMethod(e, f, func);
+			default:
+		}
+	}
+	function generateType(e:External) {
+		types.set(e.type.toComplexType().toString(), e.type);
+		var ntv = toNative(e.type.toComplexType());
+		b.add('DEFINE_KIND(${getKind(e.type)}); // $ntv\n');
+		for(f in e.fields)
+			generateField(e, f);
+	}
+	function generateHeaders() {
+		b.add("#include <hx/CFFI.h>\n#include <string.h>\n");
+		for(e in d)
+			for(h in e.headers)
+				b.add('$h\n');
+	}
+	public function generate():String {
 		b = new StringBuf();
 		b.add("#ifndef IPHONE\n#define IMPLEMENT_API\n#endif\n#if defined(HX_WINDOWS) || defined(HX_MACOS) || defined(HX_LINUX)\n#define NEKO_COMPATIBLE\n#endif\n");
 		generateHeaders();
-		for(t in d.types)
+		for(t in d)
 			generateType(t);
-		if(d.library == "llvm")
+		if(projectName == "llvm")
 			b.add("extern \"C\" int llvm_register_prims() { return 0; }\n");
-		d.cffi.saveContent(b.toString());
+		return b.toString();
 	}
-	public function generateType(t:TypeData) {
-		var ht:HaxeType = t.name;
-		if(t.native == null)
-			t.native = ht.defaultNative;
-		b.add('DEFINE_KIND(${ht.kind}); //${t.name}\n');
-		var methods = [];
-		if(t.methods != null)
-			methods = methods.concat(t.methods);
-		for(m in methods)
-			switch(m.name) {
-				case "new": generateConstructor(m, t);
-				default: generateMethod(m, t);
-			}
+	public function save() {
+		sys.io.File.saveContent('${Tools.findProjectPath(projectName)}/$PATH', generate());
 	}
-	public function lookupNative(s:HaxeType) {
-		var isP = s.isPointer;
-		if(isP)
-			s.isPointer = false;
-		var typ:TypeData = null;
-		for(t in d.types) {
-			if(t.name == s || t.native == s.defaultNative) {
-				typ = t;
-				break;
-			}
-		}
-		if(typ == null)
-			throw 'Could not find type $s';
-		var ntv = typ.native;
-		if(isP)
-			s.isPointer = true;
-		return ntv == null ? s.defaultNative : (ntv + (isP ? "*" : ""));
-	}
-	inline function toNative(s:HaxeType) {
-		var n = s.toNative();
-		var ss = n == null || n.indexOf("???") != -1 ? lookupNative(s) : n;
-		return ss;
-	}
-	public function generateConversionFrom(name:String, typ:HaxeType) {
-		return switch(typ) {
-			case "Int", "Uint", "Int64", "haxe.Int64": 'val_int($name)';
-			case "String": 'val_string($name)';
-			case "Float", "Single": 'val_float($name)';
-			case "Bool": 'val_bool($name)';
-			case _ if(typ.isPointer && typ.isBuiltin()):
-				trace(typ);
-				var ts = Std.string(typ);
-				var conv = generateConversionFrom(name, ts.substr(0, ts.length-1));
-				'&$conv';
-			case _ if(!typ.isPointer): '(*((${toNative(typ)}*) val_data($name)))';
-			case _ if(typ.isPointer): '((${toNative(typ)}) val_data($name))';
-		};
-	}
-	public function generateConversionTo(name:String, typ:HaxeType) {
-		return switch(typ) {
-			case _ if(typ.isPointer && typ.isBuiltin()):
-				var t:String = typ;
-				var ty:HaxeType = t;
-				ty.isPointer = false;
-				generateConversionTo('*$name', ty);
-			case "Int", "Uint", "Int64", "haxe.Int64": 'alloc_int($name)';
-			case "String*": 'alloc_string($name -> c_str())';
-			case "String": 'alloc_string($name.c_str())';
-			case "Float", "Single": 'alloc_float($name)';
-			case "Bool": 'alloc_bool($name)';
-			case "Dynamic": 'alloc_object($name)';
-			case _ if(!typ.isPointer): 'alloc_abstract(${typ.kind},&$name)';
-			case _: 'alloc_abstract(${typ.kind},$name)';
-		};
-	}
-	public function generateConstructor(m:MethodData, t:TypeData) {
-		var id = getName(m);
-		if(m.ret == null) m.ret = "Dynamic";
-		if(m.args == null) m.args = [];
-		var argIds = [for(i in 0...m.args.length) Tools.id(i)];
-		b.add('value $id(');
-		b.add([for(a in argIds) 'value $a'].join(", "));
-		var native = '${t.native}*';
-		if(m.isConst)
-			native = 'const $native';
-		b.add(") {");
-		b.add('// constructor');
-		b.add('\n\t$native v = ');
-		b.add(m.name);
-		b.add(" ");
-		b.add(t.native);
-		b.add("(");
-		var arguments = argIds.copy();
-		b.add(arguments.join(", "));
-		b.add(");\n\treturn ");
-		b.add('alloc_abstract(${t.name.kind}, v)');
-		b.add(';\n}\nDEFINE_PRIM($id,${argIds.length});\n');
-	}
-	public function generateMethod(m:MethodData, t:TypeData) {
-		var id = getName(m);
-		if(m.ret == null) m.ret = "Dynamic";
-		if(m.args == null) m.args = [];
-		var isVoid = m.ret == "Void";
-		var argOff = m.isStatic ? 0 : 1;
-		var argIds = [for(i in 0...argOff + m.args.length) Tools.id(i)];
-		if(m.isConst)
-			b.add("const ");
-		b.add(m.ret == "Void" ? "void" : "value");
-		b.add(' $id(');
-		b.add([for(a in argIds) 'value $a'].join(", "));
-		b.add(") ");
-		if(m.code != null && m.code.charAt(0) == "{") {
-			var code = m.code;
-			var ntabs = ~/\t(\t*)/;
-			ntabs.match(code);
-			var tabs = ntabs.matched(1);
-			code = StringTools.replace(code, '\n$tabs', "\n");
-			b.add(code);
-			b.add("\n");
-		} else if(m.ret.isArray()) {
-			b.add("{\n\t");
-			if(!isVoid) {
-				var native = toNative(t.name) + "*";
-				if(m.isConst)
-					native = 'const $native';
-				b.add('$native v = ');
-				b.add(generateConversionFrom(argIds[0], native));
-				b.add(";\n\t");
-			}
-			/*var pre = m.pre == null ? "" : m.pre;
-			b.add('value array = alloc_array(v -> ${pre}size());\n\t');
-			b.add(toNative(m.ret.arrayType()));
-			b.add("* arr = val_array_ptr(array);\n\t");
-			b.add('uint i = 0;\n\t');
-			b.add('for(${m.nativeRet} it = v -> ${pre}begin();it != v -> ${pre}end();it++) {\n\t\t');
-			b.add("i++;\n\t\t");
-			b.add("arr[i] = &*it;\n\t");
-			b.add('}\n\t');
-			b.add("return array;\n");*/
-			b.add("}\n");
-		} else {
-			b.add('{ // ${m.name} \n\t');
-			if(!isVoid) {
-				var native = toNative(m.ret);
-				if(m.isConst)
-					native = 'const $native';
-				b.add('$native v = ');
-			}
-			var callStr = "";
-			if(m.native != null && m.native.indexOf("::") != -1)
-				callStr += m.native;
-			else if(m.isStatic)
-				callStr += (t.native == null ? t.name.defaultNative : t.native) + '::${m.name}';
-			else
-				callStr += generateConversionFrom(argIds[0], t.name) + '.${m.name}';
-			var args = [for(i in 0...m.args.length) generateConversionFrom(argIds[i + argOff], m.args[i])].join(", ");
-			callStr += '($args)';
-			if(m.code == null)
-				b.add(callStr);
-			else
-				b.add(StringTools.replace(m.code, "$", callStr));
-			b.add(";\n");
-			if(!isVoid) {
-				b.add("\treturn ");
-				b.add(generateConversionTo("v", m.ret));
-				b.add(";\n");
-			}
-			b.add("}\n");
-		}
-		b.add('DEFINE_PRIM($id,${argIds.length});\n');
-	}
-	public function generateHeaders() {
-		var headers = ["<hx/CFFI.h>", "<string.h>"];
-		for(t in d.types) {
-			if(t.headers != null && t.headers.length > 0)
-				for(h in t.headers) {
-					if(Lambda.indexOf(headers, h) == -1)
-						headers.push(h);
-				}
-		}
-		for(h in headers) {
-			var name = h.charAt(0) == "<" ? h : '"$h"';
-			b.add('#include $name\n');
-		}
-	}
-	public static function getName(f:FieldData):String {
-		return if(names.exists(f))
-			names[f];
+	public function getKind(f:Type):String {
+		return if(kinds.exists(f))
+			kinds.get(f);
 		else {
-			var id = "_" + Tools.id(fc++);
-			names[f] = id;
+			var id = "k_" + Tools.id(fid++);
+			kinds.set(f, id);
 			id;
 		}
 	}

@@ -1,6 +1,25 @@
 package gen;
 import gen.data.*;
+import haxe.macro.Expr;
+using haxe.macro.ExprTools;
+using haxe.macro.ComplexTypeTools;
+using StringTools;
 class Tools {
+	public static function findProjectPath(name:String):String {
+		var p = new sys.io.Process("haxelib", ["path", name]);
+		return p.stdout.readLine();
+	}
+	public static function resolveString(e:ExprOf<String>):String {
+		return switch(e.expr) {
+			case EConst(CString(s)): s;
+			default: throw 'Invalid value ${e.toString()}';
+		}
+	}
+	public static function methodName(t:ComplexType, f:Field):String {
+		var fullName = t.toString();
+		var name = fullName.replace(".", "_").toLowerCase();
+		return '${name}_${f.name}';
+	} 
 	public static function id(x:Int) {
 		return if(x < 26)
 				String.fromCharCode("a".code + x);
@@ -15,12 +34,6 @@ class Tools {
 				}
 				s;
 			}
-	}
-	public static function resolveType(p:Project, h:HaxeType):TypeData {
-		for(t in p.types)
-			if(t.name == h)
-				return t;
-		return null;
 	}
 	public static function matches(s:String, r:EReg, ms:Int):Array<Array<String>> {
 		var a = [];
