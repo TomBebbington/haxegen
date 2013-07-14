@@ -61,7 +61,7 @@ class CppGen {
 			case TPath({name: "Int" | "UInt"}): 'val_int($name)';
 			case TPath({name: "Float"}): 'val_float($name)';
 			case TPath({name: "String"}): 'val_string($name)';
-			case _ if(types.exists(typ.toString())): 'val_data($name)';
+			case _ if(types.exists(typ.toString())): '(${toNative(typ)}) val_data($name)';
 			default: throw 'Cannot convert type $typ';
 		};
 	}
