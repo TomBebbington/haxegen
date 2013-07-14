@@ -21,7 +21,6 @@ class CppGen {
 		projectName = d[0].native.split("::")[0];
 		kinds = new Map<Type, String>();
 		types = new Map<String, Type>();
-		trace(projectName);
 		this.d = d;
 		this.b = null;
 	}
@@ -36,23 +35,32 @@ class CppGen {
 			case TPath({name: "Bool"}): "bool";
 			case TPath({name: "Void"}): "void";
 			case TPath({name: "String"}): "std::string";
+			case TPath({name: "Array", params: [TPType(TPath({name: "Float"}))]}): "double*";
+			case TPath({name: "Array", params: [TPType(TPath({name: "Int"}))]}): "int*";
 			case TPath({name: "Pointer", pack: ["gen"], params: [TPType(t)]}): toNative(t) + "*";
 			default: throw 'Unsupported type ${t.toString()}: $t';
 		}
 	}
-	public function generateConversionTo(name:String, typ:ComplexType) {
+	public function generateConversionTo(name:String, typ:ComplexType, ignorePointer:Bool=false) {
 		return switch(typ) {
 			case TPath({name: "Int" | "UInt"}): 'alloc_int($name)';
 			case TPath({name: "Bool"}): 'alloc_bool($name)';
 			case TPath({name: "Float"}): 'alloc_float($name)';
-			case TPath({name: "String"}): 'alloc_string($name)';
+			case TPath({name: "String"}): 'alloc_string($name.c_str())';
 			case TPath({name: "Void"}): throw 'Cannot wrap $name - is void';
-			case _ if(types.exists(typ.toString())):
+			case _ if(types.exists(typ.toString()) && !ignorePointer):
 				var kind = kinds.get(types.get(typ.toString()));
 				'alloc_abstract($kind, *$name)';
+			case _ if(types.exists(typ.toString()) && ignorePointer):
+				var kind = kinds.get(types.get(typ.toString()));
+				'alloc_abstract($kind, $name)';
 			case TPath({name: "Pointer", pack: ["gen"], params: [TPType(t)]}) if(types.exists(t.toString())):
 				var kind = kinds.get(types.get(t.toString()));
 				'alloc_abstract($kind, $name)';
+			case TPath({name: "Pointer", pack: ["gen"], params: [TPType(t)]}) if(ignorePointer):
+				generateConversionTo('$name', t, ignorePointer);
+			case TPath({name: "Pointer", pack: ["gen"], params: [TPType(t)]}):
+				generateConversionTo('&$name', t, ignorePointer);
 			default: throw 'Unsupported type ${typ.toString()} - $typ';
 		}
 	}
@@ -61,6 +69,7 @@ class CppGen {
 			case TPath({name: "Int" | "UInt"}): 'val_int($name)';
 			case TPath({name: "Float"}): 'val_float($name)';
 			case TPath({name: "String"}): 'val_string($name)';
+			case TPath({name: "Array", params: [TPType(t)]}): '(${toNative(t)}*) val_array_ptr($name)';
 			case _ if(types.exists(typ.toString())): '(${toNative(typ)}*) val_data($name)';
 			default: throw 'Cannot convert type $typ';
 		};
@@ -110,12 +119,17 @@ class CppGen {
 			callStr += ")";
 			if(isVoid)
 				b.add('${callStr};');
-			else {
+			else if(isConst) {
+				b.add('${e.native}* v = ');
+				b.add(callStr);
+				b.add(";\n\t");
+				b.add('return ${generateConversionTo("v", e.type.toComplexType(), true)};');
+			} else {
 				b.add(toNative(func.ret));
 				b.add(" v = ");
 				b.add(callStr);
 				b.add(";\n\t");
-				b.add('return ${generateConversionTo("v", isConst ? e.type.toComplexType() : func.ret)}');
+				b.add('return ${generateConversionTo("v", func.ret)};');
 			}
 			b.add("\n}\n");
 		}
@@ -151,7 +165,7 @@ class CppGen {
 		return b.toString();
 	}
 	public function save() {
-		sys.io.File.saveContent('${Tools.findProjectPath(projectName)}/$PATH', generate());
+		sys.io.File.saveContent('${Tools.findProjectPath(projectName)}$PATH', generate());
 	}
 	public function getKind(f:Type):String {
 		return if(kinds.exists(f))
